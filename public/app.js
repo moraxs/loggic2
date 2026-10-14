@@ -31,12 +31,16 @@ const badge = (status, title='') => `<span class="badge ${esc(status)}" title="$
 let state, page = location.hash.slice(1) || 'overview', busyCount = 0, loading = false;
 let accountQuery = '', accountFilter = 'all', logQuery = '', logFilter = 'all', logPage = 0;
 let deleteId, playController, playStarted;
+let locked = false;
 const busyAccounts = new Set();
 
 async function api(path, { method = 'GET', body } = {}) {
   const response = await fetch(`/api${path}`, {method, headers:{'X-Logicc-Admin':'1',...(body !== undefined || method === 'POST' ? {'Content-Type':'application/json'} : {})},body:body !== undefined ? JSON.stringify(body) : method === 'POST' ? '{}' : undefined, signal:AbortSignal.timeout(35000)});
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error?.message || `HTTP ${response.status}`);
+  if (!response.ok) {
+    if (response.status === 401 && path !== '/login') showLogin();
+    throw new Error(result.error?.message || `HTTP ${response.status}`);
+  }
   return result;
 }
 function toast(message, error = false) {
@@ -49,10 +53,13 @@ function toast(message, error = false) {
 }
 function errorAt(id, message) { const el = $(id); el.textContent = message; el.hidden = !message; }
 async function reload(force = false) {
-  if (loading) return;
+  if (loading || locked) return;
   loading = true;
   try {
-    state = await api('/state');
+    const nextState = await api('/state');
+    if (locked) return;
+    state = nextState;
+    state.service.baseUrl = `${location.origin}/v1`;
     $('#connection-error').hidden = true;
     $('#connection-state').innerHTML = '<span class="status-dot"></span>代理运行中';
     $('#sidebar-status').textContent = '本地服务在线';
@@ -62,6 +69,7 @@ async function reload(force = false) {
     $('#last-updated').textContent = `上次同步 ${time(Date.now())}`;
     if (force || (!busyCount && !$('dialog[open]') && !$('details.menu[open]') && !['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))) render();
   } catch (error) {
+    if (locked) return;
     $('#connection-error').textContent = `连接失败：${error.message}。请确认代理仍在运行；5 秒后自动重试。`;
     $('#connection-error').hidden = false;
     $('#connection-state').innerHTML = '<span class="status-dot offline"></span>连接已断开';
@@ -70,6 +78,55 @@ async function reload(force = false) {
     if (!state) $('#main').innerHTML = empty('无法连接代理','请检查启动服务的终端，或点击右上角刷新按钮重试。','activity');
   } finally { loading = false; }
 }
+function showLogin() {
+  locked = true; state = undefined; playController?.abort();
+  $('#main').innerHTML = empty('请登录控制台', '使用管理密码登录后查看和管理服务。', 'lock');
+  $('#connection-state').textContent = '等待登录';
+  $('#nav-count').textContent = '—';
+  $('#connection-error').hidden = true;
+  document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+  $('#login-form').reset();
+  $('#login-dialog').showModal();
+}
+$('#login-dialog').addEventListener('cancel', event => event.preventDefault());
+$('#login-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget, button = form.querySelector('[type=submit]');
+  button.disabled = true; errorAt('#login-error', '');
+  try {
+    await api('/login', { method: 'POST', body: { password: form.elements.password.value } });
+    form.reset(); locked = false; $('#login-dialog').close(); await reload(true);
+  } catch (error) { errorAt('#login-error', error.message); }
+  finally { button.disabled = false; }
+});
+const logout = $('#logout');
+logout.addEventListener('click', async () => {
+  try { await api('/logout', { method: 'POST' }); showLogin(); }
+  catch (error) { toast(error.message, true); }
+});
+const changePassword = $('#change-password');
+changePassword.addEventListener('click', () => {
+  if (locked) return;
+  $('#password-form').reset(); errorAt('#password-error', '');
+  $('#password-dialog').showModal();
+});
+$('#password-dialog').addEventListener('close', () => $('#password-form').reset());
+$('#password-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget, button = form.querySelector('[type=submit]');
+  errorAt('#password-error', '');
+  if (form.elements.newPassword.value !== form.elements.confirmPassword.value) {
+    errorAt('#password-error', '两次输入的新密码不一致'); return;
+  }
+  button.disabled = true; busyCount++;
+  try {
+    await api('/settings/admin-password', { method: 'PUT', body: {
+      currentPassword: form.elements.currentPassword.value, newPassword: form.elements.newPassword.value,
+    } });
+    form.reset(); showLogin(); toast('管理密码已保存，请使用新密码重新登录');
+  } catch (error) { errorAt('#password-error', error.message); }
+  finally { button.disabled = false; busyCount--; }
+});
 function heading(title, subtitle, actions = '', eyebrow = 'WORKSPACE / LOCAL') {
   return `<div class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${subtitle}</p></div><div class="heading-actions">${actions}</div></div>`;
 }
@@ -149,7 +206,7 @@ function connectPage() {
   const model=state.models[0]?.id || 'default';
   const snippet=`curl ${base}/chat/completions \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer ${state.service.apiKeyRequired?'YOUR_API_KEY':'local'}' \\\n  -d '${JSON.stringify({model,stream:true,messages:[{role:'user',content:'你好，请简单介绍自己。'}]})}'`;
   return heading('连接你的客户端','通过 OpenAI 兼容协议，将客户端接入 Logicc 号池。','','DEVELOPER / API ACCESS')+
-  `<div class="integration-grid"><section class="panel integration-panel"><h2>OpenAI 兼容接口</h2><p>在客户端的自定义服务中填写以下 Base URL。</p><div class="copy-field"><code class="mono">${esc(base)}</code><button class="text-button" data-action="copy-url">${icon('copy')}复制</button></div><div class="info-rows"><div><span>API Key</span><b>${state.service.apiKeyRequired?'使用启动时配置的 LOGICC_API_KEY':'任意非空字符串，例如 local'}</b></div><div><span>模型列表</span><b class="mono">GET /v1/models</b></div><div><span>聊天补全</span><b class="mono">POST /v1/chat/completions</b></div></div><div class="section-title"><h2>快速测试</h2><span>cURL / Streaming</span></div><div class="code-block"><button class="code-copy" data-action="copy-code">复制</button><pre id="curl-snippet">${esc(snippet)}</pre></div></section><div><section class="panel integration-panel"><h2>连接信息</h2><div class="info-rows"><div><span>服务范围</span><b>仅本机 · 127.0.0.1</b></div><div><span>上游服务</span><b>app.logicc.com</b></div><div><span>账户调度</span><b>低并发优先轮询</b></div><div><span>速率限制</span><b>429 后冷却 60 秒</b></div><div><span>凭据异常</span><b>401 / 403 后冷却 5 分钟</b></div><div><span>请求记录</span><b>最多 2,000 条</b></div></div></section><div class="notice"><strong>关于凭据刷新</strong><br>__client Cookie + Session ID 可按需获取短期 JWT。客户端凭据失效时，在号池中更新后重新检测即可。<br><br>检测和实际请求会更新账户状态；控制台自动刷新只读取本地数据。</div></div></div>`;
+  `<div class="integration-grid"><section class="panel integration-panel"><h2>OpenAI 兼容接口</h2><p>在客户端的自定义服务中填写以下 Base URL。</p><div class="copy-field"><code class="mono">${esc(base)}</code><button class="text-button" data-action="copy-url">${icon('copy')}复制</button></div><div class="info-rows"><div><span>API Key</span><b>${state.service.apiKeyRequired?'使用已配置的 API Key':'任意非空字符串，例如 local'}</b></div><div><span>模型列表</span><b class="mono">GET /v1/models</b></div><div><span>聊天补全</span><b class="mono">POST /v1/chat/completions</b></div></div><div class="section-title"><h2>快速测试</h2><span>cURL / Streaming</span></div><div class="code-block"><button class="code-copy" data-action="copy-code">复制</button><pre id="curl-snippet">${esc(snippet)}</pre></div></section><div><section class="panel integration-panel"><h2>自定义 API Key</h2><form id="api-key-form" class="form-panel"><label>新的 API Key<input name="apiKey" type="password" required maxlength="512" autocomplete="new-password" placeholder="输入自定义 Key，或点击生成" spellcheck="false"></label><p class="field-hint">保存后立即生效并持久化，替换原有 Key。服务只保存摘要，不返回明文；请先复制保管。</p><div class="heading-actions"><button type="button" class="button secondary" data-action="generate-api-key">生成</button><button type="button" class="button secondary" data-action="copy-api-key">复制</button><button type="submit" class="button primary">保存</button></div></form></section><section class="panel integration-panel section-gap"><h2>连接信息</h2><div class="info-rows"><div><span>服务范围</span><b>通过服务器 IP / 域名访问</b></div><div><span>上游服务</span><b>app.logicc.com</b></div><div><span>账户调度</span><b>低并发优先轮询</b></div><div><span>速率限制</span><b>429 后冷却 60 秒</b></div><div><span>凭据异常</span><b>401 / 403 后冷却 5 分钟</b></div><div><span>请求记录</span><b>最多 2,000 条</b></div></div></section><div class="notice"><strong>关于凭据刷新</strong><br>__client Cookie + Session ID 可按需获取短期 JWT。客户端凭据失效时，在号池中更新后重新检测即可。<br><br>检测和实际请求会更新账户状态；控制台自动刷新只读取本地数据。</div></div></div>`;
 }
 function playgroundPage() {
   return heading('发起一次真实请求','直接验证号池、模型与流式响应；测试会消耗上游额度。','','WORKSPACE / PLAYGROUND')+
@@ -211,6 +268,7 @@ document.addEventListener('change',event=>{
   if(event.target.id==='log-filter'){logFilter=event.target.value;logPage=0;$('#logs-content').innerHTML=logsContent();}
 });
 document.addEventListener('click',async event=>{
+  if (locked) return;
   const close=event.target.closest('[data-close]');if(close){$(`#${close.dataset.close}`).close();return;}
   const button=event.target.closest('[data-action]');if(!button || button.disabled)return;
   const {action,id}=button.dataset;
@@ -225,6 +283,12 @@ document.addEventListener('click',async event=>{
       $('#request-detail').innerHTML=`<dl class="details-list">${[['请求 ID',r.id],['开始时间',date(r.startedAt)],['请求类型',kindLabel(r.kind)],['账户',r.accountName || '未分配'],['模型',r.model || '—'],['首字延迟',duration(r.ttftMs)],['总耗时',duration(r.durationMs)],['结果',statuses[r.status]],['Token 用量',r.usage?`${r.usage.prompt_tokens} 输入 / ${r.usage.completion_tokens} 输出`:'上游未提供'],...(r.error?[['错误',r.error]]:[])].map(([label,value])=>`<div><dt>${label}</dt><dd class="${label==='错误'?'error-detail':''}">${esc(value)}</dd></div>`).join('')}</dl>`;return $('#detail-dialog').showModal();
     }
     if(action==='copy-url')return copy(state.service.baseUrl);
+    if(action==='generate-api-key') {
+      const bytes = crypto.getRandomValues(new Uint8Array(24));
+      $('#api-key-form').elements.apiKey.value = `sk-${Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')}`;
+      toast('已生成，请复制保存后点击保存'); return;
+    }
+    if(action==='copy-api-key')return copy($('#api-key-form').elements.apiKey.value);
     if(action==='copy-code')return copy($('#curl-snippet').textContent);
     if(action==='prev-logs'||action==='next-logs'){logPage+=action==='next-logs'?1:-1;$('#logs-content').innerHTML=logsContent();return;}
     if(action==='export-logs'){
@@ -248,6 +312,17 @@ document.addEventListener('click',async event=>{
   finally{if(button.disabled){button.disabled=false;busyCount=Math.max(0,busyCount-1);}}
 });
 document.addEventListener('submit',async event=>{
+  if(event.target.id==='api-key-form') {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector('[type=submit]');
+    button.disabled = true; busyCount++;
+    try {
+      await api('/settings/api-key', { method: 'PUT', body: { apiKey: form.elements.apiKey.value } });
+      form.reset(); toast('API Key 已保存并立即生效，请使用新 Key 调用接口');
+    } catch(error) { toast(error.message, true); }
+    finally { button.disabled = false; busyCount--; await reload(true); }
+    return;
+  }
   if(event.target.id!=='play-form')return;
   event.preventDefault();if(playController)return;
   const form=event.target,output=$('#play-output'),status=$('#play-status'),meta=$('#play-meta'),submit=$('#play-submit'),stop=$('#play-stop');
@@ -269,6 +344,6 @@ document.addEventListener('submit',async event=>{
 });
 window.addEventListener('hashchange',()=>{if(playController)playController.abort();page=location.hash.slice(1)||'overview';render();$('#main').focus({preventScroll:true});window.scrollTo(0,0);});
 $('#refresh').addEventListener('click',()=>reload(true));
-for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('click',event=>{if(event.target===dialog){const box=dialog.getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)dialog.close();}});
+for(const dialog of document.querySelectorAll('dialog:not(#login-dialog)'))dialog.addEventListener('click',event=>{if(event.target===dialog){const box=dialog.getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)dialog.close();}});
 await reload(true);
 setInterval(()=>{if(!document.hidden)reload();},5000);

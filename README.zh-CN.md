@@ -33,9 +33,9 @@ npm start
 
 无需安装依赖，也可以直接执行 `node server.mjs`。
 
-1. 打开 **<http://127.0.0.1:18789/>**。
+1. 打开 **<http://127.0.0.1:18789/>**，使用 `LOGICC_ADMIN_PASSWORD` 登录；未配置时，首次启动会在终端输出随机管理密码，请保存。
 2. 进入 **号池管理 → 添加账户**，填写凭据后点击 **检测**。
-3. 在客户端中设置 Base URL 为 **`http://127.0.0.1:18789/v1`**。未配置 `LOGICC_API_KEY` 时，API Key 填任意非空字符串，例如 `local`。
+3. 在客户端中设置 Base URL 为 **`http://127.0.0.1:18789/v1`**。可在 **API 接入 → 自定义 API Key** 输入或生成 Key，复制保管后保存，立即生效且重启后保留。尚未配置 Key 时，API Key 填任意非空字符串，例如 `local`。
 
 自定义端口：
 
@@ -43,7 +43,7 @@ npm start
 node server.mjs 18790
 ```
 
-直接使用 Node.js 启动时默认监听 `127.0.0.1`，命令行端口优先于环境变量 `PORT`。
+直接使用 Node.js 启动时默认监听 `0.0.0.0`，可通过服务器 IP 或域名访问，命令行端口优先于环境变量 `PORT`。
 
 ## Docker 部署
 
@@ -59,7 +59,7 @@ docker compose up -d --build --wait
 
 如果已经克隆仓库，在项目根目录执行最后一条命令即可。启动后打开 **<http://127.0.0.1:18789/>**，在号池中添加账户，客户端 Base URL 填 **`http://127.0.0.1:18789/v1`**。
 
-镜像基于 Node.js 24 Alpine，使用非 root 的 `node` 用户运行。容器内设置 `LOGICC_HOST=0.0.0.0`，使 Docker 端口转发可以连接服务；Compose 只把端口发布到宿主机的 `127.0.0.1`。镜像通过 `/health` 检查服务是否存活；容器显示 healthy 不代表上游账户已经通过连接检测。
+镜像基于 Node.js 24 Alpine，使用非 root 的 `node` 用户运行。容器内设置 `LOGICC_HOST=0.0.0.0`，使 Docker 端口转发可以连接服务；Compose 将端口发布到宿主机所有网络接口。镜像通过 `/health` 检查服务是否存活；容器显示 healthy 不代表上游账户已经通过连接检测。
 
 ### 修改端口或设置 API Key
 
@@ -68,15 +68,16 @@ docker compose up -d --build --wait
 ```dotenv
 LOGICC_PORT=18790
 LOGICC_API_KEY=replace-with-your-own-key
+LOGICC_ADMIN_PASSWORD=replace-with-your-admin-password
 ```
 
 ```bash
 docker compose up -d --wait
 ```
 
-之后访问 `http://127.0.0.1:18790/`，调用 `/v1/*` 时携带配置的 Bearer Key。两个变量均可省略，默认端口为 `18789`、不要求 API Key。如果本机原有 Node.js 服务已占用 `18789`，请选择其他端口。把配置保存在 `.env` 中，可以保证后续 Compose 命令使用同一组设置。Compose 通过[环境变量插值](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/)读取配置；该文件被 Git 忽略，也不会进入镜像构建。
+之后访问 `http://127.0.0.1:18790/`，调用 `/v1/*` 时携带配置的 Bearer Key。这些变量均可省略，默认端口为 `18789`；未配置管理密码时自动生成，未配置 API Key 时不要求 Key。如果本机原有 Node.js 服务已占用 `18789`，请选择其他端口。把配置保存在 `.env` 中，可以保证后续 Compose 命令使用同一组设置。Compose 通过[环境变量插值](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/)读取配置；该文件被 Git 忽略，也不会进入镜像构建。
 
-由于服务会校验 HTTP Host 中的端口，`LOGICC_PORT` 会同步调整容器内和宿主机端口。自行编写 `docker run` 命令时，也应保持两侧端口一致；修改默认端口时需设置容器内的 `PORT`。API Key 仅保护 `/v1/*`，不会为控制台增加管理员登录。
+控制台和管理接口需要管理员登录。API Key 保护 `/v1/*`，与管理密码独立；前端保存的 Key 优先于 `LOGICC_API_KEY`。可使用不同的容器内外端口或反向代理域名。
 
 ### 数据、日志与更新
 
@@ -97,13 +98,13 @@ docker compose down
 
 只有确定要删除号池数据时，才给 `docker compose down` 添加 `--volumes` / `-v`。命名卷行为可参考 [Docker 数据卷文档](https://docs.docker.com/engine/storage/volumes/)。
 
-部署在远程服务器时，可在自己的电脑上通过 SSH 隧道访问仅限本机的控制台：
+部署在远程服务器时，可直接通过服务器 IP 访问；也可将 `LOGICC_HOST` 设为 `127.0.0.1`（Compose 需同时限制宿主机端口绑定），并通过 SSH 隧道访问：
 
 ```bash
 ssh -N -L 18789:127.0.0.1:18789 your-user@your-server
 ```
 
-然后在电脑上打开 `http://127.0.0.1:18789/`。如果修改了端口，请同步调整两处端口号。现有本机来源检查仍然生效；公网域名访问需要另行设计身份认证和访问控制。
+然后在电脑上打开 `http://127.0.0.1:18789/`。如果修改了端口，请同步调整两处端口号。控制台允许同源的 IP / 域名访问，管理接口需要登录；通过公网部署时请使用 HTTPS 反向代理保护密码与会话。
 
 ## 账户凭据
 
@@ -206,9 +207,10 @@ curl -N http://127.0.0.1:18789/v1/chat/completions \
 | 环境变量 | 用途 |
 | --- | --- |
 | `PORT` | 监听端口，默认 `18789` |
-| `LOGICC_HOST` | 监听地址；Node.js 直接启动默认 `127.0.0.1`，容器内默认 `0.0.0.0` |
+| `LOGICC_HOST` | 监听地址；默认 `0.0.0.0`，设置 `127.0.0.1` 可限制为本机访问 |
 | `LOGICC_DATA_FILE` | 数据文件路径，默认项目目录下 `data/state.json` |
-| `LOGICC_API_KEY` | 可选，配置后 `/v1/*` 必须携带对应 Bearer Key |
+| `LOGICC_API_KEY` | 初始 Bearer Key；前端保存的自定义 Key 优先，旧 Key 随即失效 |
+| `LOGICC_ADMIN_PASSWORD` | 控制台初始管理密码；面板保存的密码优先。未配置时首次启动自动生成并输出 |
 | `LOGICC_API_BASE` | 上游基址，默认 `https://app.logicc.com/api` |
 | `LOGICC_CLERK_BASE` | Clerk 基址，默认 `https://clerk.logicc.com` |
 | `LOGICC_CLIENT_COOKIE` | 号池为空时导入默认账户 |
@@ -217,7 +219,7 @@ curl -N http://127.0.0.1:18789/v1/chat/completions \
 | `LOGICC_TOKEN_FILE` | 环境变量导入账户使用的外部 JWT 文件 |
 | `LOGICC_TOKEN_CMD` | 该账户的外部 JWT 刷新命令，仅从进程环境读取，页面不可配置 |
 
-直接使用 Node.js 启动时，程序不自动加载 `.env` 文件。请在 shell 中导出环境变量，或在支持的 Node.js 版本中使用 `node --env-file=.env server.mjs` 启动。Docker Compose 会读取 `.env` 并映射上文的 `LOGICC_PORT` 和 `LOGICC_API_KEY`；`LOGICC_PORT` 仅用于 Compose，不是 Node.js 服务直接读取的变量。如需其他环境变量，应显式添加到 Compose 服务配置中。
+直接使用 Node.js 启动时，程序不自动加载 `.env` 文件。请在 shell 中导出环境变量，或在支持的 Node.js 版本中使用 `node --env-file=.env server.mjs` 启动。Docker Compose 会读取 `.env` 并映射上文的 `LOGICC_PORT`、`LOGICC_API_KEY` 和 `LOGICC_ADMIN_PASSWORD`；`LOGICC_PORT` 仅用于 Compose，不是 Node.js 服务直接读取的变量。如需其他环境变量，应显式添加到 Compose 服务配置中。
 
 已有账户数据优先于初始环境凭据，避免旧环境变量覆盖已轮换的 Cookie。使用外部刷新命令或 JWT 文件的账户，重启时仍需提供相应配置。
 
@@ -225,7 +227,11 @@ curl -N http://127.0.0.1:18789/v1/chat/completions \
 
 看板统计保留记录中最近 24 小时的聊天请求。模型同步与账号检测显示在日志中，不计入聊天指标。日志页展示最近 200 条记录。首字延迟包含凭据刷新、建立聊天和网络传输耗时；请求日志不保存提示词与生成的回答。
 
-控制台面向 **单进程本机使用**，没有单独的管理员登录系统。管理请求需要通过本机来源/Host 检查并带有 `X-Logicc-Admin: 1`；`LOGICC_API_KEY` 仅保护 `/v1/*`。兼容入口 `POST /__set_token` 接收原始 JWT，可附加 `?account_id=<id>`，允许 Logicc 页面来源访问，并按 JWT 的 Session ID 匹配账户。
+控制台面向 **单进程使用**，管理员通过密码登录，使用 HttpOnly、SameSite=Strict 会话 Cookie，有效期 12 小时；退出或服务重启后需重新登录。管理接口还要求同源请求及 `X-Logicc-Admin: 1`，连续登录失败会触发限流。自动生成的管理密码和前端保存的 API Key 仅保存加盐摘要，不通过状态接口返回；点击控制台右上角 **修改密码**，输入当前密码、新密码（8–512 个字符）并确认后保存。新密码以加盐摘要写入数据文件，立即生效，重启后优先于 `LOGICC_ADMIN_PASSWORD`；修改后所有会话失效，需要重新登录。
+
+管理密码遗失时，先停止服务并备份数据文件，删除 `settings.adminPassword` 字段，再设置 `LOGICC_ADMIN_PASSWORD` 并重启；保留账户及其他配置。
+
+兼容入口 `POST /__set_token` 接收原始 JWT，可附加 `?account_id=<id>`，按 JWT 的 Session ID 匹配账户。该入口同样需要管理认证；Logicc 页面推送时携带 `X-Logicc-Password: <管理密码>`，预检允许该请求头。
 
 不要让多个实例同时写入同一数据文件。独立实例请分别配置端口和 `LOGICC_DATA_FILE`。
 

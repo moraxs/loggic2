@@ -33,9 +33,9 @@ npm start
 
 There is no dependency installation step. You can also run `node server.mjs` directly.
 
-1. Open **<http://127.0.0.1:18789/>**.
+1. Open **<http://127.0.0.1:18789/>** and sign in with `LOGICC_ADMIN_PASSWORD`. If unset, save the random admin password printed on first startup.
 2. Go to **号池管理 → 添加账户** (Account pool → Add account), enter your credentials, and click **检测** (Check).
-3. Point your client at **`http://127.0.0.1:18789/v1`**. Unless you configure `LOGICC_API_KEY`, use any non-empty API key, such as `local`.
+3. Point your client at **`http://127.0.0.1:18789/v1`**. Set or generate a custom key in **API 接入 → 自定义 API Key**; copy it before saving. Changes apply immediately and persist across restarts. Until a key is configured, use any non-empty API key, such as `local`.
 
 To select a different port:
 
@@ -43,7 +43,7 @@ To select a different port:
 node server.mjs 18790
 ```
 
-Native startup binds to `127.0.0.1` by default. Command-line port selection takes precedence over `PORT`.
+Native startup binds to `0.0.0.0` by default, allowing server IP and domain access. Command-line port selection takes precedence over `PORT`.
 
 ## Docker deployment
 
@@ -59,7 +59,7 @@ docker compose up -d --build --wait
 
 If you already cloned the repository, run the last command from its root directory. Open **<http://127.0.0.1:18789/>**, add an account, and use **`http://127.0.0.1:18789/v1`** as your client's Base URL.
 
-The image uses Node.js 24 Alpine and runs as the non-root `node` user. Inside the container, `LOGICC_HOST=0.0.0.0` allows Docker's port forwarding to reach the server. Compose publishes the port only on the host's `127.0.0.1`. The image health check calls `/health`; a healthy container means the service is running, not that an upstream account has passed a check.
+The image uses Node.js 24 Alpine and runs as the non-root `node` user. Inside the container, `LOGICC_HOST=0.0.0.0` allows Docker's port forwarding to reach the server. Compose publishes the port on all host interfaces. The image health check calls `/health`; a healthy container means the service is running, not that an upstream account has passed a check.
 
 ### Change the port or API key
 
@@ -68,15 +68,16 @@ Create a local `.env` file next to `compose.yaml`, for example:
 ```dotenv
 LOGICC_PORT=18790
 LOGICC_API_KEY=replace-with-your-own-key
+LOGICC_ADMIN_PASSWORD=replace-with-your-admin-password
 ```
 
 ```bash
 docker compose up -d --wait
 ```
 
-Then use `http://127.0.0.1:18790/` and supply the configured Bearer key for `/v1/*`. Both variables are optional; the defaults are port `18789` and no API key requirement. Use another port if a native instance already occupies `18789`. Keep the settings in `.env` so subsequent Compose commands use the same configuration. Compose reads these values through [environment interpolation](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/); the file is ignored by Git and excluded from the image build.
+Then use `http://127.0.0.1:18790/` and supply the configured Bearer key for `/v1/*`. All variables are optional; defaults are port `18789`, a generated admin password, and no API key requirement. Use another port if a native instance already occupies `18789`. Keep the settings in `.env` so subsequent Compose commands use the same configuration. Compose reads these values through [environment interpolation](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/); the file is ignored by Git and excluded from the image build.
 
-`LOGICC_PORT` changes the container port and published port together because the server validates the HTTP Host port. When writing a custom `docker run` command, keep the two ports equal and set `PORT` inside the container if changing the default. An API key protects `/v1/*`; it does not add an admin login to the console.
+The console and management endpoints require admin login. API keys protect `/v1/*` independently; a key saved in the console takes precedence over `LOGICC_API_KEY`. Different published/container ports and reverse proxy domains are supported.
 
 ### Data, logs, and upgrades
 
@@ -97,13 +98,13 @@ docker compose down
 
 Do not add `--volumes` / `-v` to `docker compose down` unless you intend to delete the account data. Named volume behavior is documented in [Docker's volume guide](https://docs.docker.com/engine/storage/volumes/).
 
-For deployment on a remote server, access the local-only console through an SSH tunnel from your computer:
+For a remote server, use its IP directly, or set `LOGICC_HOST=127.0.0.1` (also restrict the host port binding for Compose) and access the console through an SSH tunnel:
 
 ```bash
 ssh -N -L 18789:127.0.0.1:18789 your-user@your-server
 ```
 
-Then open `http://127.0.0.1:18789/` on your computer. Adjust both port numbers if you configured another port. The existing local-origin checks remain in effect; public-domain hosting requires a separate authentication/access design.
+Then open `http://127.0.0.1:18789/` on your computer. Adjust both port numbers if you configured another port. Same-origin IP/domain access is supported with admin authentication. Use an HTTPS reverse proxy for public deployments to protect passwords and sessions.
 
 ## Account credentials
 
@@ -206,9 +207,10 @@ Upstream token usage is converted when available. When it is absent, API respons
 | Environment variable | Purpose |
 | --- | --- |
 | `PORT` | Listening port; default `18789` |
-| `LOGICC_HOST` | Bind address; native default `127.0.0.1`, container default `0.0.0.0` |
+| `LOGICC_HOST` | Bind address; default `0.0.0.0`; set `127.0.0.1` to restrict access to this machine |
 | `LOGICC_DATA_FILE` | State path; default `data/state.json` in the project directory |
-| `LOGICC_API_KEY` | Optional Bearer key required for `/v1/*` |
+| `LOGICC_API_KEY` | Initial Bearer key for `/v1/*`; console-saved keys take precedence and replace the previous key |
+| `LOGICC_ADMIN_PASSWORD` | Initial admin password; a console-saved password takes precedence. When unset, generated and printed on first startup |
 | `LOGICC_API_BASE` | Upstream base URL; default `https://app.logicc.com/api` |
 | `LOGICC_CLERK_BASE` | Clerk base URL; default `https://clerk.logicc.com` |
 | `LOGICC_CLIENT_COOKIE` | Import a default account into an empty pool |
@@ -217,7 +219,7 @@ Upstream token usage is converted when available. When it is absent, API respons
 | `LOGICC_TOKEN_FILE` | External JWT file for the environment-imported account |
 | `LOGICC_TOKEN_CMD` | External JWT refresh command for that account; configured only through the process environment |
 
-Native Node.js startup does not load `.env` files automatically. Export variables in your shell or, on a compatible Node.js version, start with `node --env-file=.env server.mjs`. Docker Compose reads `.env` for the `LOGICC_PORT` and `LOGICC_API_KEY` mappings above; `LOGICC_PORT` is a Compose setting, not a native server setting. Other environment variables must be explicitly added to the Compose service if needed.
+Native Node.js startup does not load `.env` files automatically. Export variables in your shell or, on a compatible Node.js version, start with `node --env-file=.env server.mjs`. Docker Compose reads `.env` for the `LOGICC_PORT`, `LOGICC_API_KEY`, and `LOGICC_ADMIN_PASSWORD` mappings above; `LOGICC_PORT` is a Compose setting, not a native server setting. Other environment variables must be explicitly added to the Compose service if needed.
 
 Existing saved accounts take precedence over initial environment credentials, so old environment values do not overwrite rotated cookies. If you use an external refresh command or token file, keep providing its configuration when starting the service.
 
@@ -225,7 +227,11 @@ Existing saved accounts take precedence over initial environment credentials, so
 
 The dashboard summarizes retained chat records from the previous 24 hours. Model discovery and account checks appear in logs but are excluded from chat metrics. The log page displays the latest 200 records. First-text latency includes credential refresh, chat creation, and network time. Prompts and generated answers are not stored in request logs.
 
-The console is intended for a **single local process**, with no separate admin login. Management requests require the local origin/Host checks and `X-Logicc-Admin: 1`; `LOGICC_API_KEY` protects `/v1/*`, not the console. The compatibility endpoint `POST /__set_token` accepts a raw JWT, optionally with `?account_id=<id>`, and permits the Logicc page origin. JWTs are matched to accounts by Session ID.
+The console runs as a **single process**. Admin login uses an HttpOnly, SameSite=Strict session cookie valid for 12 hours. Logout and server restarts invalidate sessions. Management requests also require same-origin checks and `X-Logicc-Admin: 1`; failed logins are rate limited. Generated passwords and console-saved API keys are stored as salted hashes and never returned in state responses. Click **修改密码** in the top-right corner of the console and provide your current password, a new password (8–512 characters), and confirmation. The new salted hash is saved immediately and takes precedence over `LOGICC_ADMIN_PASSWORD` after restarts. All sessions are invalidated and must log in again.
+
+To recover a lost password, stop the service and back up the data file, remove its `settings.adminPassword` field, then set `LOGICC_ADMIN_PASSWORD` and restart. Keep accounts and other settings intact.
+
+The compatibility endpoint `POST /__set_token` accepts a raw JWT, optionally with `?account_id=<id>`, and matches accounts by Session ID. It requires management authentication too; requests from the Logicc page must include `X-Logicc-Password: <admin password>`, which is allowed by the bridge preflight.
 
 Do not run multiple instances against the same state file. Use separate `LOGICC_DATA_FILE` paths and ports for independent instances.
 

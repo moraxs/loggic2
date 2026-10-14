@@ -8,7 +8,7 @@
   <title>Logicc · 代理控制台</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/app.js?v=20261014-password"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -28,7 +28,7 @@
     <div class="sidebar-bottom"><div class="server-label"><span class="status-dot" id="sidebar-dot"></span><strong id="sidebar-status">正在连接代理</strong></div><span class="mono" id="sidebar-address">127.0.0.1:18789</span><div class="sidebar-footer"><span>Logicc Adapter</span><span>v1.0</span></div></div>
   </aside>
   <div class="app-shell">
-    <header class="topbar"><div class="breadcrumb">控制台<span>/</span><strong id="breadcrumb-page">代理概览</strong></div><div class="topbar-actions"><span id="connection-state" class="connection-state"><span class="status-dot"></span>连接中</span><span class="top-divider"></span><button id="refresh" class="icon-button" aria-label="刷新数据" title="刷新数据"><span data-icon="refresh"></span></button><span class="avatar" aria-label="本地用户">L</span></div></header>
+    <header class="topbar"><div class="breadcrumb">控制台<span>/</span><strong id="breadcrumb-page">代理概览</strong></div><div class="topbar-actions"><span id="connection-state" class="connection-state"><span class="status-dot"></span>连接中</span><span class="top-divider"></span><button id="refresh" class="icon-button" aria-label="刷新数据" title="刷新数据"><span data-icon="refresh"></span></button><button id="change-password" class="button secondary" type="button">修改管理密码</button><button id="logout" class="text-button" type="button">退出登录</button></div></header>
     <div id="connection-error" class="connection-error" role="alert" hidden></div>
     <main id="main" tabindex="-1"><div class="loading-state"><span class="loader"></span><p>正在读取代理状态…</p></div></main>
     <footer class="page-footer"><span><span class="tiny-dot"></span> 数据来自本地代理 · 每 5 秒更新</span><span id="last-updated">等待同步</span></footer>
@@ -58,6 +58,22 @@
   </form></dialog>
   <dialog id="confirm-dialog" class="modal small-modal"><form id="confirm-form"><div class="modal-header"><h2>移除账户</h2><button type="button" class="icon-button" data-close="confirm-dialog" aria-label="关闭"><span data-icon="close"></span></button></div><p id="confirm-message" class="modal-description"></p><p id="confirm-error" class="form-error" hidden role="alert"></p><div class="modal-footer"><button type="button" class="button secondary" data-close="confirm-dialog">取消</button><button type="submit" class="button danger">确认移除</button></div></form></dialog>
   <dialog id="detail-dialog" class="modal"><div class="modal-header"><h2>请求详情</h2><button type="button" class="icon-button" data-close="detail-dialog" aria-label="关闭"><span data-icon="close"></span></button></div><div id="request-detail"></div></dialog>
+  <dialog id="login-dialog" class="modal small-modal"><form id="login-form">
+    <div class="modal-header"><h2>管理员登录</h2></div>
+    <p class="modal-description">请输入当前管理密码。初始密码为 LOGICC_ADMIN_PASSWORD，或首次启动时终端输出的随机密码。</p>
+    <label>管理密码<input name="password" type="password" required maxlength="512" autocomplete="current-password"></label>
+    <p id="login-error" class="form-error" role="alert" hidden></p>
+    <div class="modal-footer"><button type="submit" class="button primary">登录控制台</button></div>
+  </form></dialog>
+  <dialog id="password-dialog" class="modal small-modal"><form id="password-form">
+    <div class="modal-header"><h2>修改管理密码</h2><button type="button" class="icon-button" data-close="password-dialog" aria-label="关闭"><span data-icon="close"></span></button></div>
+    <p class="modal-description">保存后立即生效，重启后仍使用新密码。所有已登录会话将失效，请使用新密码重新登录。</p>
+    <label>当前管理密码<input name="currentPassword" type="password" required maxlength="512" autocomplete="current-password"></label>
+    <label>新管理密码<input name="newPassword" type="password" required minlength="8" maxlength="512" autocomplete="new-password"></label>
+    <label>确认新密码<input name="confirmPassword" type="password" required minlength="8" maxlength="512" autocomplete="new-password"></label>
+    <p id="password-error" class="form-error" role="alert" hidden></p>
+    <div class="modal-footer"><button type="button" class="button secondary" data-close="password-dialog">取消</button><button type="submit" class="button primary">保存新密码</button></div>
+  </form></dialog>
   <div id="toasts" class="toasts" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>

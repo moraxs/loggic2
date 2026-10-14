@@ -9,9 +9,9 @@ services:
     environment:
       PORT: "${LOGICC_PORT:-18789}"
       LOGICC_API_KEY: "${LOGICC_API_KEY:-}"
+      LOGICC_ADMIN_PASSWORD: "${LOGICC_ADMIN_PASSWORD:-}"
     ports:
-      # Keep both ports equal because the server validates the Host header port.
-      - "127.0.0.1:${LOGICC_PORT:-18789}:${LOGICC_PORT:-18789}"
+      - "${LOGICC_PORT:-18789}:${LOGICC_PORT:-18789}"
     volumes:
       - logicc-data:/app/data
 

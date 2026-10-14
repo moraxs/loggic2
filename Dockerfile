@@ -6,7 +6,7 @@ ENV NODE_ENV=production \
     LOGICC_DATA_FILE=/app/data/state.json
 
 WORKDIR /app
-COPY package.json server.mjs pool.mjs LICENSE ./
+COPY package.json server.mjs pool.mjs auth.mjs LICENSE ./
 COPY public ./public
 RUN mkdir -p /app/data && chown node:node /app/data
 

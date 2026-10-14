@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { timingSafeEqual } from 'node:crypto';
+import { createAuth } from './auth.mjs';
 import { AccountPool, HttpError, claims, safeError } from './pool.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -85,6 +85,7 @@ function usageOf(event) {
 
 export function createAdapter({ env = process.env, dataFile = env.LOGICC_DATA_FILE || resolve(ROOT, 'data/state.json') } = {}) {
   const pool = new AccountPool(dataFile, env);
+  const auth = createAuth(pool, env);
   const apiBase = (env.LOGICC_API_BASE || 'https://app.logicc.com/api').replace(/\/+$/, '');
 
   async function upstream(account, path, { method = 'GET', body, stream = false, signal } = {}, retry = true) {
@@ -228,17 +229,16 @@ export function createAdapter({ env = process.env, dataFile = env.LOGICC_DATA_FI
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
     try {
       const host = req.headers.host || '';
-      const localPort = server.address()?.port;
-      if (![ `127.0.0.1:${localPort}`, `localhost:${localPort}`, `[::1]:${localPort}` ].includes(host)) throw new HttpError(403, '仅接受本机 Host');
+      if (!host || !/^(?:[a-zA-Z0-9.-]+|\[[a-fA-F0-9:]+\])(?::\d{1,5})?$/.test(host)) throw new HttpError(400, 'HTTP Host 格式不正确');
       const url = new URL(req.url, `http://${host}`);
       const origin = req.headers.origin;
       const bridge = url.pathname === '/__set_token' && origin === 'https://app.logicc.com';
-      if (origin && origin !== `http://${host}` && !bridge) throw new HttpError(403, '不允许此网页来源访问本机控制台');
+      if (origin && ![`http://${host}`, `https://${host}`].includes(origin) && !bridge) throw new HttpError(403, '不允许此网页来源访问控制台');
       if (req.headers['sec-fetch-site'] === 'cross-site' && !bridge) throw new HttpError(403, '不允许跨站访问');
       if (bridge) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Logicc-Password');
         res.setHeader('Access-Control-Allow-Private-Network', 'true');
         res.setHeader('Vary', 'Origin');
       }
@@ -253,8 +253,25 @@ export function createAdapter({ env = process.env, dataFile = env.LOGICC_DATA_FI
       if (url.pathname.startsWith('/api/')) {
         if (req.headers['x-logicc-admin'] !== '1') throw new HttpError(403, '控制台请求缺少 X-Logicc-Admin 请求头');
         if (!['GET', 'DELETE'].includes(req.method) && !req.headers['content-type']?.startsWith('application/json')) throw new HttpError(415, '管理接口需要 application/json');
+        if (url.pathname === '/api/login' && req.method === 'POST') {
+          auth.login(req, res, (await readJson(req))?.password);
+          return json(res, 200, { ok: true });
+        }
+        auth.require(req);
+        if (url.pathname === '/api/logout' && req.method === 'POST') {
+          auth.logout(req, res);
+          return json(res, 200, { ok: true });
+        }
+        if (url.pathname === '/api/settings/api-key' && req.method === 'PUT') {
+          auth.setApiKey((await readJson(req))?.apiKey);
+          return json(res, 200, { ok: true, apiKeyRequired: true });
+        }
+        if (url.pathname === '/api/settings/admin-password' && req.method === 'PUT') {
+          auth.changePassword(req, res, await readJson(req));
+          return json(res, 200, { ok: true });
+        }
         if (url.pathname === '/api/state' && req.method === 'GET') return json(res, 200, {
-          ...pool.snapshot(), service: { baseUrl: `http://${host}/v1`, upstream: apiBase, apiKeyRequired: Boolean(env.LOGICC_API_KEY), strategy: 'least-busy-round-robin' },
+          ...pool.snapshot(), service: { baseUrl: `${origin === `https://${host}` ? 'https' : 'http'}://${host}/v1`, upstream: apiBase, apiKeyRequired: auth.apiKeyRequired(), strategy: 'least-busy-round-robin' },
         });
         if (url.pathname === '/api/accounts' && req.method === 'POST') {
           const input = await readJson(req);
@@ -285,6 +302,7 @@ export function createAdapter({ env = process.env, dataFile = env.LOGICC_DATA_FI
         throw new HttpError(404, '管理接口不存在');
       }
       if (url.pathname === '/__set_token' && req.method === 'POST') {
+        auth.requireBridge(req);
         const token = (await readBody(req, 25000)).trim().replace(/^(['"])(.*)\1$/, '$2');
         const sid = claims(token).sid;
         const requested = url.searchParams.get('account_id');
@@ -293,11 +311,7 @@ export function createAdapter({ env = process.env, dataFile = env.LOGICC_DATA_FI
         const account = existing ? pool.update(existing.id, { token }) : pool.addMany([{ name: '浏览器账户', token }])[0];
         return json(res, 200, { ok: true, accountId: account.id, exp: claims(token).exp });
       }
-      if (url.pathname.startsWith('/v1/') && env.LOGICC_API_KEY) {
-        const incoming = Buffer.from(req.headers.authorization || '');
-        const expected = Buffer.from(`Bearer ${env.LOGICC_API_KEY}`);
-        if (incoming.length !== expected.length || !timingSafeEqual(incoming, expected)) throw new HttpError(401, '代理 API Key 不正确');
-      }
+      if (url.pathname.startsWith('/v1/')) auth.checkApiKey(req);
       if (url.pathname === '/v1/models' && req.method === 'GET') {
         const models = await track(req, res, 'models', (account, _trace, signal) => modelsFor(account, signal));
         return json(res, 200, { object: 'list', data: models.map(m => ({ id: m.id, object: 'model', created: 0, owned_by: m.provider })) });
@@ -311,14 +325,16 @@ export function createAdapter({ env = process.env, dataFile = env.LOGICC_DATA_FI
       } else json(res, error.status >= 400 && error.status <= 599 ? error.status : 502, { error: { message, type: 'adapter_error' } });
     }
   });
-  return { server, pool };
+  return { server, pool, auth };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.argv[2] || process.env.PORT || 18789);
-  const host = process.env.LOGICC_HOST || '127.0.0.1';
-  const { server } = createAdapter();
+  const host = process.env.LOGICC_HOST || '0.0.0.0';
+  const { server, auth } = createAdapter();
   server.listen(port, host, () => {
+    console.log(`Listening:     ${host}:${server.address().port}`);
+    if (auth.generatedPassword) console.log(`管理密码（请保存）: ${auth.generatedPassword}`);
     console.log(`Logicc console: http://127.0.0.1:${server.address().port}/`);
     console.log(`OpenAI API:    http://127.0.0.1:${server.address().port}/v1`);
   });

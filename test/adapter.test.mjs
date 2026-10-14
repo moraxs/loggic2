@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,11 +46,13 @@ async function harness(t,extra={}) {
   });
   const upstream=await listen(mock);
   const file=join(folder,'state.json');
-  const {server,pool}=createAdapter({dataFile:file,env:{LOGICC_API_BASE:`${upstream}/api`,LOGICC_CLERK_BASE:upstream,...extra}});
+  const {server,pool}=createAdapter({dataFile:file,env:{LOGICC_ADMIN_PASSWORD:'test-admin-password',LOGICC_API_BASE:`${upstream}/api`,LOGICC_CLERK_BASE:upstream,...extra}});
   const base=await listen(server);
+  const login=await fetch(base+'/api/login',{method:'POST',headers:{'X-Logicc-Admin':'1','Content-Type':'application/json'},body:JSON.stringify({password:extra.LOGICC_ADMIN_PASSWORD || 'test-admin-password'})});
+  const cookie=login.headers.get('set-cookie').split(';')[0];
   t.after(async()=>{await close(server);await close(mock);rmSync(folder,{recursive:true,force:true});});
   const api=async(path,method='GET',body,headers={})=>{
-    const response=await fetch(base+path,{method,headers:{'X-Logicc-Admin':'1',...(body!==undefined?{'Content-Type':'application/json'}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});
+    const response=await fetch(base+path,{method,headers:{Cookie:cookie,'X-Logicc-Admin':'1',...(body!==undefined?{'Content-Type':'application/json'}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});
     return {status:response.status,data:await response.json()};
   };
   const add=async(name,sid,extra={})=>(await api('/api/accounts','POST',{name,token:jwt(sid),...extra})).data.account;
@@ -65,7 +67,7 @@ test('account CRUD, atomic import, credential masking, persistence, validation',
   assert.equal(JSON.parse(readFileSync(file)).accounts[0].clientCookie,'secret_cookie');
   await api(`/api/accounts/${a.id}`,'PATCH',{clientCookie:'replacement_cookie',sessionId:'sess_replaced'});
   assert.equal(JSON.parse(readFileSync(file)).accounts[0].token,'');
-  assert.equal(statSync(file).mode & 0o777,0o600);
+  if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777,0o600);
   const imported=await api('/api/accounts/import','POST',[{name:'第二个',token:jwt('sess_two')},{name:'重复项',token:jwt('sess_replaced')}]);
   assert.equal(imported.status,409);assert.equal((await api('/api/state')).data.accounts.length,1);
   assert.equal((await api('/api/accounts/import','POST',[{name:'第二个',token:jwt('sess_two')}])).status,201);
@@ -135,12 +137,100 @@ test('local-origin boundary, API key, malformed JSON, oversized body, and empty 
   assert.equal((await fetch(base+'/api/state')).status,403);
   assert.equal((await api('/api/state','GET',undefined,{Origin:'https://evil.example'})).status,403);
   assert.equal((await api('/api/state','GET',undefined,{'Sec-Fetch-Site':'cross-site'})).status,403);
-  assert.equal((await fetch(base+'/api/accounts',{method:'POST',headers:{'X-Logicc-Admin':'1','Content-Type':'application/json'},body:'{'})).status,400);
-  assert.equal((await fetch(base+'/api/accounts',{method:'POST',headers:{'X-Logicc-Admin':'1','Content-Type':'application/json'},body:'x'.repeat(1048577)})).status,413);
+  assert.equal((await api('/api/accounts','POST',{})).status,400);
+  assert.equal((await fetch(base+'/api/login',{method:'POST',headers:{'X-Logicc-Admin':'1','Content-Type':'application/json'},body:'{'})).status,400);
+  assert.equal((await fetch(base+'/api/login',{method:'POST',headers:{'X-Logicc-Admin':'1','Content-Type':'application/json'},body:'x'.repeat(1048577)})).status,413);
   assert.equal((await api('/api/accounts','POST',null)).status,400);
   assert.equal((await fetch(base+'/__set_token',{method:'POST',headers:{Origin:'https://evil.example'},body:jwt('sess_test')})).status,403);
-  const bridge=await fetch(base+'/__set_token',{method:'POST',headers:{Origin:'https://app.logicc.com'},body:jwt('sess_bridge')});
+  const bridge=await fetch(base+'/__set_token',{method:'POST',headers:{Origin:'https://app.logicc.com','X-Logicc-Password':'test-admin-password'},body:jwt('sess_bridge')});
   assert.equal(bridge.status,200);assert.equal(bridge.headers.get('Access-Control-Allow-Origin'),'https://app.logicc.com');
+});
+
+test('admin login, logout, remote Host, protected bridge and persisted custom API keys',async t=>{
+  const {api,base,add,file}=await harness(t,{LOGICC_API_KEY:'environment-key'});
+  const headers={'X-Logicc-Admin':'1','Content-Type':'application/json'};
+  assert.equal((await fetch(base+'/api/state',{headers})).status,401);
+  assert.equal((await fetch(base+'/api/login',{method:'POST',headers,body:JSON.stringify({password:'wrong'})})).status,401);
+  const login=await fetch(base+'/api/login',{method:'POST',headers,body:JSON.stringify({password:'test-admin-password'})});
+  assert.equal(login.status,200);
+  const cookie=login.headers.get('set-cookie');
+  assert.match(cookie,/HttpOnly/);assert.match(cookie,/SameSite=Strict/);
+  const session=cookie.split(';')[0];
+  const remoteStatus=await new Promise((resolve,reject)=>{
+    const req=request(base+'/api/state',{headers:{...headers,Cookie:session,Host:'192.168.1.10:18789',Origin:'http://192.168.1.10:18789'}},res=>{res.resume();resolve(res.statusCode);});
+    req.on('error',reject);req.end();
+  });
+  assert.equal(remoteStatus,200);
+  assert.equal((await fetch(base+'/__set_token',{method:'POST',headers:{Origin:'https://app.logicc.com'},body:jwt('sess_untrusted')})).status,401);
+  await add('认证测试','sess_auth');
+  assert.equal((await api('/v1/models','GET',undefined,{Authorization:'Bearer environment-key'})).status,200);
+  assert.equal((await api('/api/settings/api-key','PUT',{apiKey:'custom-key'})).status,200);
+  assert.equal((await api('/v1/models','GET',undefined,{Authorization:'Bearer environment-key'})).status,401);
+  assert.equal((await api('/v1/models','GET',undefined,{Authorization:'Bearer custom-key'})).status,200);
+  assert.equal((await api('/api/settings/api-key','PUT',{apiKey:'bad key'})).status,400);
+  assert.equal((await api('/api/settings/api-key','PUT',{apiKey:''})).status,400);
+  assert.ok(!JSON.stringify((await api('/api/state')).data).includes('custom-key'));
+  assert.ok(!readFileSync(file,'utf8').includes('custom-key'));
+  const restarted=createAdapter({dataFile:file,env:{LOGICC_ADMIN_PASSWORD:'test-admin-password',LOGICC_API_KEY:'environment-key'}});
+  const restartedBase=await listen(restarted.server);t.after(()=>close(restarted.server));
+  assert.equal((await fetch(restartedBase+'/v1/models',{headers:{Authorization:'Bearer environment-key'}})).status,401);
+  assert.equal((await fetch(restartedBase+'/v1/unknown',{headers:{Authorization:'Bearer custom-key'}})).status,404);
+  assert.equal((await fetch(base+'/api/logout',{method:'POST',headers:{...headers,Cookie:session},body:'{}'})).status,200);
+  assert.equal((await fetch(base+'/api/state',{headers:{...headers,Cookie:session}})).status,401);
+});
+
+test('admin password changes verify current password, persist across restarts and invalidate all sessions', async t=>{
+  const {api,base,file,pool}=await harness(t);
+  const headers={'X-Logicc-Admin':'1','Content-Type':'application/json'};
+  const login = (password, url=base) => fetch(url+'/api/login',{method:'POST',headers,body:JSON.stringify({password})});
+  const otherSession=(await login('test-admin-password')).headers.get('set-cookie').split(';')[0];
+  const body={currentPassword:'test-admin-password',newPassword:'updated-admin-password'};
+  assert.equal((await fetch(base+'/api/settings/admin-password',{method:'PUT',headers,body:JSON.stringify(body)})).status,401);
+  assert.equal((await api('/api/settings/admin-password','PUT',{...body,currentPassword:'wrong'})).status,403);
+  assert.equal((await api('/api/state')).status,200);
+  for (const newPassword of ['', 'short', '        ', 'a'.repeat(513), null]) {
+    assert.equal((await api('/api/settings/admin-password','PUT',{...body,newPassword})).status,400);
+  }
+  const save=pool.save;
+  pool.save=()=>{throw new Error('simulated disk failure');};
+  assert.equal((await api('/api/settings/admin-password','PUT',body)).status,502);
+  pool.save=save;
+  assert.equal(pool.data.settings.adminPassword,undefined);
+  assert.equal((await fetch(base+'/api/state',{headers:{...headers,Cookie:otherSession}})).status,200);
+  assert.equal((await api('/api/settings/admin-password','PUT',body)).status,200);
+  assert.equal((await api('/api/state')).status,401);
+  assert.equal((await fetch(base+'/api/state',{headers:{...headers,Cookie:otherSession}})).status,401);
+  assert.equal((await login('test-admin-password')).status,401);
+  const newLogin=await login(body.newPassword);assert.equal(newLogin.status,200);
+  const cookie=newLogin.headers.get('set-cookie').split(';')[0];
+  const snapshot=await (await fetch(base+'/api/state',{headers:{...headers,Cookie:cookie}})).json();
+  assert.ok(!JSON.stringify(snapshot).includes('adminPassword'));
+  const saved=JSON.parse(readFileSync(file,'utf8')).settings.adminPassword;
+  assert.ok(saved.salt);assert.ok(saved.digest);
+  assert.ok(!readFileSync(file,'utf8').includes(body.newPassword));
+  const restarted=createAdapter({dataFile:file,env:{LOGICC_ADMIN_PASSWORD:'test-admin-password'}});
+  const restartedBase=await listen(restarted.server);t.after(()=>close(restarted.server));
+  assert.equal((await login('test-admin-password',restartedBase)).status,401);
+  assert.equal((await login(body.newPassword,restartedBase)).status,200);
+  const withoutEnvironment=createAdapter({dataFile:file,env:{}});
+  const withoutBase=await listen(withoutEnvironment.server);t.after(()=>close(withoutEnvironment.server));
+  assert.equal(withoutEnvironment.auth.generatedPassword,undefined);
+  assert.equal((await login(body.newPassword,withoutBase)).status,200);
+});
+
+test('generated administrator password persists as a hash and login attempts are limited', async t=>{
+  const folder=mkdtempSync(join(tmpdir(),'logicc-auth-')),file=join(folder,'state.json');
+  const first=createAdapter({dataFile:file,env:{}}),base=await listen(first.server);
+  t.after(async()=>{await close(first.server);rmSync(folder,{recursive:true,force:true});});
+  assert.ok(first.auth.generatedPassword);
+  assert.ok(!readFileSync(file,'utf8').includes(first.auth.generatedPassword));
+  const restarted=createAdapter({dataFile:file,env:{}}),secondBase=await listen(restarted.server);
+  t.after(()=>close(restarted.server));
+  assert.equal(restarted.auth.generatedPassword,undefined);
+  const headers={'X-Logicc-Admin':'1','Content-Type':'application/json'};
+  assert.equal((await fetch(secondBase+'/api/login',{method:'POST',headers,body:JSON.stringify({password:first.auth.generatedPassword})})).status,200);
+  for(let i=0;i<10;i++) assert.equal((await fetch(base+'/api/login',{method:'POST',headers,body:'{"password":"wrong"}'})).status,401);
+  assert.equal((await fetch(base+'/api/login',{method:'POST',headers,body:'{"password":"wrong"}'})).status,429);
 });
 
 test('SSE parser supports split multibyte text and unterminated final frames',async()=>{
